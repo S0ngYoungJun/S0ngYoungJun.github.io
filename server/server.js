@@ -2,15 +2,18 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const mariadb = require('mariadb');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 const path = require('path');
 const app = express();
 const port = 3001;
 const bcrypt = require('bcrypt');
+
 app.use(cors());
 app.use(bodyParser.json());
 
 let users = {}; // For simplicity, storing users in-memory
 let posts = []; // For simplicity, storing posts in-memory
+
 
 const pool = mariadb.createPool({
   host: 'localhost',
@@ -21,24 +24,48 @@ const pool = mariadb.createPool({
   port:3306
 });
 
+app.use(express.static(path.join(__dirname, 'client', 'build')));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'build', 'index.html'));
 });
 
+const generateAccessToken = (username) => {
+  return jwt.sign({ username }, 'your-secret-key', { expiresIn: '15m' });
+};
+
+const authenticateToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) {
+    return res.sendStatus(401);
+  }
+
+  jwt.verify(token, 'your-secret-key', (err, user) => {
+    if (err) {
+      return res.sendStatus(403);
+    }
+
+    req.user = user;
+    next();
+  });
+};
+
 app.post('/api/login', async (req, res) => {
   // 로그인 로직
 
-  const { email, password } = req.body;
+  const { username, password } = req.body;
 
   try {
     const connection = await pool.getConnection();
-    const rows = await connection.query('SELECT * FROM users WHERE email = ? AND password = ?', [email, password]);
+    const rows = await connection.query('SELECT * FROM user WHERE username = ? AND password = ?', [username, password]);
     connection.release();
 
-    if (rows.length > 0) {
-      res.json({ message: '로그인 성공', userId: rows[0].id });
+    if (rows.length === 1) {
+      const accessToken = generateAccessToken(username);
+      res.json({ message: 'Login successful', token: accessToken });
     } else {
-      res.status(401).json({ error: '아이디 또는 비밀번호가 일치하지 않습니다.' });
+      res.status(401).json({ error: 'Invalid username or password' });
     }
   } catch (error) {
     console.error(error);
@@ -46,40 +73,46 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-app.post('/api/post', async (req, res) => {
-  const { userId, content } = req.body;
 
-  if (!userId || !content) {
-    return res.status(400).json({ error: 'User ID and content are required' });
-  }
-
-  try {
-    const connection = await pool.getConnection();
-    const result = await connection.query('INSERT INTO posts (user_id, content) VALUES (?, ?)', [userId, content]);
-    connection.release();
-
-    res.json({ message: 'Post created successfully', postId: result.insertId });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// 게시물 조회
+// 포스트 목록 조회
 app.get('/api/posts', async (req, res) => {
   try {
     const connection = await pool.getConnection();
     const rows = await connection.query('SELECT * FROM posts');
     connection.release();
-
-    res.json(rows);
+    res.json({ posts: rows });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
+app.post('/api/posts', authenticateToken, async (req, res) => {
+  const { text: newPostText } = req.body;
 
+  try {
+    const { username } = req.user;
+
+    const connection = await pool.getConnection();
+    const result = await connection.query('INSERT INTO posts (username, text) VALUES (?, ?)', [username, newPostText]);
+    connection.release();
+
+    const newPost = {
+      id: result.insertId,
+      username,
+      text: newPostText,
+    };
+
+    res.json({ message: '포스트가 성공적으로 등록되었습니다.', newPost });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/user', authenticateToken, (req, res) => {
+  res.json({ username: req.user.username, email: req.user.email });
+});
 
 
 app.post('/api/signup', async (req, res) => {
