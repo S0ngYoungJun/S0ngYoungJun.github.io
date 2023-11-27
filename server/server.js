@@ -7,6 +7,8 @@ const path = require('path');
 const app = express();
 const port = 3001;
 const bcrypt = require('bcrypt');
+const multer = require('multer');
+const fs = require('fs');
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -16,12 +18,12 @@ let posts = []; // For simplicity, storing posts in-memory
 
 
 const pool = mariadb.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '723546',
+  host: '192.168.100.134',
+  user: 'nts96',
+  password: '1234',
   database: 'fareex',
   connectionLimit: 5,
-  port:3306
+  port:3307
 });
 
 app.use(express.static(path.join(__dirname, 'client', 'build')));
@@ -138,18 +140,43 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ error: '이미 등록된 이메일입니다.' });
     }
 
-    // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insert user into the database
     const result = await pool.query(
       'INSERT INTO user (username, password, name, gender, phone, birthdate, email) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [username, hashedPassword, name, gender, phone, birthdate, email]
+      [username, password, name, gender, phone, birthdate, email]
     );
 
     res.json({ message: 'Sign up successful', userId: result.insertId });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+const storage = multer.memoryStorage(); // 메모리에 파일을 저장
+const upload = multer({ storage: storage });
+
+// 파일 업로드 엔드포인트
+app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
+  const { file } = req;
+
+  try {
+    const { username } = req.user;
+    const fileName = `${username}_${file.originalname}`;
+
+    // S3에 파일 업로드
+    const uploadParams = {
+      Bucket: 'your-s3-bucket-name',
+      Key: fileName,
+      Body: file.buffer, // 파일 버퍼 전송
+    };
+
+    const s3Response = await s3.upload(uploadParams).promise();
+
+    res.json({ message: '파일 업로드 성공', s3Url: s3Response.Location });
+  } catch (error) {
+    console.error('파일 업로드 실패:', error);
     res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 });
